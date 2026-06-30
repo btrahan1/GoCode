@@ -136,6 +136,8 @@ type AppSettings struct {
 	OpenCodeApiKey      string `json:"openCodeApiKey"`
 	OpenRouterApiKey    string `json:"openRouterApiKey"`
 	UseNativeToolCalls  bool   `json:"useNativeToolCalls"`
+	SidebarWidth        int    `json:"sidebarWidth"`
+	LogPanelWidth       int    `json:"logPanelWidth"`
 }
 
 func (a *App) LoadSettings() (AppSettings, error) {
@@ -144,9 +146,27 @@ func (a *App) LoadSettings() (AppSettings, error) {
 	openCodeKey, _ := a.db.GetSetting("open_code_api_key")
 	openRouterKey, _ := a.db.GetSetting("open_router_api_key")
 	useNativeStr, _ := a.db.GetSetting("use_native_tool_calls")
+	sidebarWidthStr, _ := a.db.GetSetting("sidebar_width")
+	logPanelWidthStr, _ := a.db.GetSetting("log_panel_width")
 	
 	if ollamaEnd == "" {
 		ollamaEnd = "http://localhost:11434"
+	}
+
+	sidebarWidth := 280
+	if sidebarWidthStr != "" {
+		var val int
+		if _, err := fmt.Sscanf(sidebarWidthStr, "%d", &val); err == nil {
+			sidebarWidth = val
+		}
+	}
+
+	logPanelWidth := 320
+	if logPanelWidthStr != "" {
+		var val int
+		if _, err := fmt.Sscanf(logPanelWidthStr, "%d", &val); err == nil {
+			logPanelWidth = val
+		}
 	}
 
 	return AppSettings{
@@ -155,6 +175,8 @@ func (a *App) LoadSettings() (AppSettings, error) {
 		OpenCodeApiKey:     openCodeKey,
 		OpenRouterApiKey:   openRouterKey,
 		UseNativeToolCalls: useNativeStr == "true",
+		SidebarWidth:        sidebarWidth,
+		LogPanelWidth:       logPanelWidth,
 	}, nil
 }
 
@@ -163,6 +185,8 @@ func (a *App) SaveSettings(settings AppSettings) error {
 	_ = a.db.SaveSetting("ollama_endpoint", settings.OllamaEndpoint)
 	_ = a.db.SaveSetting("open_code_api_key", settings.OpenCodeApiKey)
 	_ = a.db.SaveSetting("open_router_api_key", settings.OpenRouterApiKey)
+	_ = a.db.SaveSetting("sidebar_width", fmt.Sprintf("%d", settings.SidebarWidth))
+	_ = a.db.SaveSetting("log_panel_width", fmt.Sprintf("%d", settings.LogPanelWidth))
 	useNativeVal := "false"
 	if settings.UseNativeToolCalls {
 		useNativeVal = "true"

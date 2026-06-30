@@ -33,6 +33,8 @@ interface AppSettings {
   openCodeApiKey: string;
   openRouterApiKey: string;
   useNativeToolCalls: boolean;
+  sidebarWidth: number;
+  logPanelWidth: number;
 }
 
 interface FileNode {
@@ -131,6 +133,15 @@ function App() {
   // Model list and favorites
   const [modelsList, setModelsList] = useState<ModelItem[]>([]);
 
+  // Sizable Panel Widths
+  const [sidebarWidth, setSidebarWidth] = useState<number>(280);
+  const [logPanelWidth, setLogPanelWidth] = useState<number>(320);
+
+  const sidebarResizingRef = useRef<boolean>(false);
+  const logPanelResizingRef = useRef<boolean>(false);
+  const sidebarWidthRef = useRef<number>(280);
+  const logPanelWidthRef = useRef<number>(320);
+
   // Settings
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [settings, setSettings] = useState<AppSettings>({
@@ -138,7 +149,9 @@ function App() {
     ollamaEndpoint: 'http://localhost:11434',
     openCodeApiKey: '',
     openRouterApiKey: '',
-    useNativeToolCalls: false
+    useNativeToolCalls: false,
+    sidebarWidth: 280,
+    logPanelWidth: 320
   });
 
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -159,6 +172,14 @@ function App() {
     LoadSettings()
       .then((loadedSettings) => {
         setSettings(loadedSettings);
+        if (loadedSettings.sidebarWidth) {
+          setSidebarWidth(loadedSettings.sidebarWidth);
+          sidebarWidthRef.current = loadedSettings.sidebarWidth;
+        }
+        if (loadedSettings.logPanelWidth) {
+          setLogPanelWidth(loadedSettings.logPanelWidth);
+          logPanelWidthRef.current = loadedSettings.logPanelWidth;
+        }
         // Refresh models list after settings load (Ollama endpoint might change)
         refreshModelsList();
       })
@@ -285,6 +306,62 @@ function App() {
       setActiveSessionId('');
     }
   }, [activeWorkspace]);
+
+  // Sidebar drag resizer logic
+  const handleSidebarMouseMove = (e: MouseEvent) => {
+    if (!sidebarResizingRef.current) return;
+    const newWidth = Math.max(200, Math.min(550, e.clientX));
+    sidebarWidthRef.current = newWidth;
+    setSidebarWidth(newWidth);
+  };
+
+  const stopSidebarResize = () => {
+    sidebarResizingRef.current = false;
+    document.removeEventListener('mousemove', handleSidebarMouseMove);
+    document.removeEventListener('mouseup', stopSidebarResize);
+    
+    // Save to settings
+    setSettings((prev) => {
+      const next = { ...prev, sidebarWidth: sidebarWidthRef.current };
+      SaveSettings(next);
+      return next;
+    });
+  };
+
+  const startSidebarResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    sidebarResizingRef.current = true;
+    document.addEventListener('mousemove', handleSidebarMouseMove);
+    document.addEventListener('mouseup', stopSidebarResize);
+  };
+
+  // Log panel drag resizer logic
+  const handleLogPanelMouseMove = (e: MouseEvent) => {
+    if (!logPanelResizingRef.current) return;
+    const newWidth = Math.max(200, Math.min(600, window.innerWidth - e.clientX));
+    logPanelWidthRef.current = newWidth;
+    setLogPanelWidth(newWidth);
+  };
+
+  const stopLogPanelResize = () => {
+    logPanelResizingRef.current = false;
+    document.removeEventListener('mousemove', handleLogPanelMouseMove);
+    document.removeEventListener('mouseup', stopLogPanelResize);
+    
+    // Save to settings
+    setSettings((prev) => {
+      const next = { ...prev, logPanelWidth: logPanelWidthRef.current };
+      SaveSettings(next);
+      return next;
+    });
+  };
+
+  const startLogPanelResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    logPanelResizingRef.current = true;
+    document.addEventListener('mousemove', handleLogPanelMouseMove);
+    document.addEventListener('mouseup', stopLogPanelResize);
+  };
 
   const refreshModelsList = () => {
     GetModelList()
@@ -510,7 +587,14 @@ function App() {
       {/* Main Workspace Workspace Layout */}
       <div className="app-container" style={{ flex: 1, height: 'calc(100vh - 39px)' }}>
         {/* Sidebar Panel */}
-        <div className="sidebar">
+        <div 
+          className="sidebar" 
+          style={{ 
+            width: `${sidebarWidth}px`, 
+            minWidth: `${sidebarWidth}px`, 
+            maxWidth: `${sidebarWidth}px` 
+          }}
+        >
           {activeWorkspace ? (
             <>
               <div className="workspace-section" style={{ maxHeight: '180px', display: 'flex', flexDirection: 'column' }}>
@@ -607,6 +691,9 @@ function App() {
             </button>
           </div>
         </div>
+
+        {/* Sidebar Drag Resizer */}
+        <div className="resizer-bar" onMouseDown={startSidebarResize} />
 
         {/* Main Panel with Tabs */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
@@ -725,8 +812,19 @@ function App() {
           )}
         </div>
 
+        {/* Log Panel Drag Resizer */}
+        <div className="resizer-bar" onMouseDown={startLogPanelResize} />
+
         {/* Telemetry & Shell Logging Panel */}
-        <div className="log-panel" style={{ height: '100%' }}>
+        <div 
+          className="log-panel" 
+          style={{ 
+            height: '100%',
+            width: `${logPanelWidth}px`,
+            minWidth: `${logPanelWidth}px`,
+            maxWidth: `${logPanelWidth}px`
+          }}
+        >
           <div className="log-header">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <polyline points="4 17 10 11 4 5"></polyline>

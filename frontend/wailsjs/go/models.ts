@@ -6,6 +6,8 @@ export namespace main {
 	    openCodeApiKey: string;
 	    openRouterApiKey: string;
 	    useNativeToolCalls: boolean;
+	    sidebarWidth: number;
+	    logPanelWidth: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppSettings(source);
@@ -18,6 +20,8 @@ export namespace main {
 	        this.openCodeApiKey = source["openCodeApiKey"];
 	        this.openRouterApiKey = source["openRouterApiKey"];
 	        this.useNativeToolCalls = source["useNativeToolCalls"];
+	        this.sidebarWidth = source["sidebarWidth"];
+	        this.logPanelWidth = source["logPanelWidth"];
 	    }
 	}
 	export class ChatMessage {
