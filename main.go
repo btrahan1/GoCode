@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"log"
+	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -13,8 +14,8 @@ import (
 var assets embed.FS
 
 func main() {
-	// Initialize database connection
-	connStr := "postgres://postgres:postgrespassword@localhost:5435/gocode?sslmode=disable"
+	// Initialize database connection (fallback to SQLite if DATABASE_URL is unset)
+	connStr := os.Getenv("DATABASE_URL")
 	db, err := NewDBClient(connStr)
 	if err != nil {
 		log.Fatalf("Database initialization failed: %v", err)

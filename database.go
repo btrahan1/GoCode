@@ -4,9 +4,13 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
+	_ "modernc.org/sqlite"
 )
 
 type ChatMessage struct {
@@ -25,30 +29,62 @@ type SavedConversation struct {
 }
 
 type DBClient struct {
-	db *sql.DB
+	db         *sql.DB
+	driverName string
 }
 
 func NewDBClient(connStr string) (*DBClient, error) {
-	db, err := sql.Open("postgres", connStr)
-	if err != nil {
-		return nil, err
-	}
+	var db *sql.DB
+	var err error
+	var driverName string
 
-	// Try to ping to verify connection with a few retries
-	var pingErr error
-	for i := 0; i < 5; i++ {
-		pingErr = db.Ping()
-		if pingErr == nil {
-			break
+	isPostgres := strings.HasPrefix(connStr, "postgres://")
+
+	if isPostgres {
+		driverName = "postgres"
+		db, err = sql.Open("postgres", connStr)
+		if err != nil {
+			return nil, err
 		}
-		log.Printf("Waiting for Postgres database... attempt %d/5: %v", i+1, pingErr)
-		time.Sleep(2 * time.Second)
-	}
-	if pingErr != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", pingErr)
+
+		// Try to ping Postgres to verify connection with a few retries
+		var pingErr error
+		for i := 0; i < 5; i++ {
+			pingErr = db.Ping()
+			if pingErr == nil {
+				break
+			}
+			log.Printf("Waiting for Postgres database... attempt %d/5: %v", i+1, pingErr)
+			time.Sleep(2 * time.Second)
+		}
+		if pingErr != nil {
+			return nil, fmt.Errorf("failed to connect to Postgres: %w", pingErr)
+		}
+	} else {
+		// Use SQLite fallback
+		driverName = "sqlite"
+		
+		// Find user configuration dir
+		configDir, err := os.UserConfigDir()
+		if err != nil {
+			configDir = "." // Fallback to current working directory
+		}
+
+		appDir := filepath.Join(configDir, "GoCode")
+		if err := os.MkdirAll(appDir, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create AppData configuration directory: %w", err)
+		}
+
+		dbPath := filepath.Join(appDir, "gocode.db")
+		log.Printf("Connecting to SQLite database at: %s", dbPath)
+
+		db, err = sql.Open("sqlite", dbPath)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	client := &DBClient{db: db}
+	client := &DBClient{db: db, driverName: driverName}
 	if err := client.initSchema(); err != nil {
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
@@ -61,30 +97,60 @@ func (c *DBClient) Close() error {
 }
 
 func (c *DBClient) initSchema() error {
-	queries := []string{
-		`CREATE TABLE IF NOT EXISTS conversations (
-			session_id VARCHAR(255) PRIMARY KEY,
-			workspace_path TEXT NOT NULL,
-			active_model VARCHAR(255) NOT NULL,
-			agent_mode VARCHAR(255) NOT NULL,
-			yolo_mode BOOLEAN NOT NULL DEFAULT FALSE,
-			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-		);`,
-		`CREATE TABLE IF NOT EXISTS messages (
-			id SERIAL PRIMARY KEY,
-			session_id VARCHAR(255) REFERENCES conversations(session_id) ON DELETE CASCADE,
-			sender VARCHAR(50) NOT NULL,
-			text TEXT NOT NULL,
-			reasoning TEXT NOT NULL DEFAULT '',
-			image_base64 TEXT NOT NULL DEFAULT '',
-			created_at TIMESTAMP NOT NULL DEFAULT NOW()
-		);`,
-		`CREATE TABLE IF NOT EXISTS settings (
-			key VARCHAR(255) PRIMARY KEY,
-			value TEXT NOT NULL
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_conversations_workspace ON conversations(workspace_path);`,
-		`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);`,
+	var queries []string
+
+	if c.driverName == "sqlite" {
+		queries = []string{
+			`CREATE TABLE IF NOT EXISTS conversations (
+				session_id VARCHAR(255) PRIMARY KEY,
+				workspace_path TEXT NOT NULL,
+				active_model VARCHAR(255) NOT NULL,
+				agent_mode VARCHAR(255) NOT NULL,
+				yolo_mode BOOLEAN NOT NULL DEFAULT FALSE,
+				updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			);`,
+			`CREATE TABLE IF NOT EXISTS messages (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				session_id VARCHAR(255) REFERENCES conversations(session_id) ON DELETE CASCADE,
+				sender VARCHAR(50) NOT NULL,
+				text TEXT NOT NULL,
+				reasoning TEXT NOT NULL DEFAULT '',
+				image_base64 TEXT NOT NULL DEFAULT '',
+				created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			);`,
+			`CREATE TABLE IF NOT EXISTS settings (
+				key VARCHAR(255) PRIMARY KEY,
+				value TEXT NOT NULL
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_conversations_workspace ON conversations(workspace_path);`,
+			`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);`,
+		}
+	} else {
+		queries = []string{
+			`CREATE TABLE IF NOT EXISTS conversations (
+				session_id VARCHAR(255) PRIMARY KEY,
+				workspace_path TEXT NOT NULL,
+				active_model VARCHAR(255) NOT NULL,
+				agent_mode VARCHAR(255) NOT NULL,
+				yolo_mode BOOLEAN NOT NULL DEFAULT FALSE,
+				updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+			);`,
+			`CREATE TABLE IF NOT EXISTS messages (
+				id SERIAL PRIMARY KEY,
+				session_id VARCHAR(255) REFERENCES conversations(session_id) ON DELETE CASCADE,
+				sender VARCHAR(50) NOT NULL,
+				text TEXT NOT NULL,
+				reasoning TEXT NOT NULL DEFAULT '',
+				image_base64 TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+			);`,
+			`CREATE TABLE IF NOT EXISTS settings (
+				key VARCHAR(255) PRIMARY KEY,
+				value TEXT NOT NULL
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_conversations_workspace ON conversations(workspace_path);`,
+			`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);`,
+		}
 	}
 
 	for _, q := range queries {
@@ -97,7 +163,6 @@ func (c *DBClient) initSchema() error {
 
 // LoadConversation retrieves a conversation and its messages for a given workspace path.
 func (c *DBClient) LoadConversation(workspacePath string) (*SavedConversation, error) {
-	// First load the conversation settings
 	var conv SavedConversation
 	query := `SELECT session_id, active_model, agent_mode, yolo_mode 
 	          FROM conversations WHERE workspace_path = $1 
@@ -142,12 +207,12 @@ func (c *DBClient) SaveConversation(workspacePath string, conv *SavedConversatio
 	// Upsert conversation settings
 	upsertConv := `
 		INSERT INTO conversations (session_id, workspace_path, active_model, agent_mode, yolo_mode, updated_at)
-		VALUES ($1, $2, $3, $4, $5, NOW())
+		VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
 		ON CONFLICT (session_id) DO UPDATE 
 		SET active_model = EXCLUDED.active_model,
 		    agent_mode = EXCLUDED.agent_mode,
 		    yolo_mode = EXCLUDED.yolo_mode,
-		    updated_at = NOW();`
+		    updated_at = CURRENT_TIMESTAMP;`
 	
 	_, err = tx.Exec(upsertConv, conv.SessionID, workspacePath, conv.ActiveModel, conv.AgentMode, conv.YoloMode)
 	if err != nil {
@@ -166,7 +231,7 @@ func (c *DBClient) SaveConversation(workspacePath string, conv *SavedConversatio
 		vals := []interface{}{}
 		for i, msg := range conv.Messages {
 			n := i * 5
-			insertMsg += fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, NOW()),", n+1, n+2, n+3, n+4, n+5)
+			insertMsg += fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, CURRENT_TIMESTAMP),", n+1, n+2, n+3, n+4, n+5)
 			vals = append(vals, conv.SessionID, msg.Sender, msg.Text, msg.Reasoning, msg.ImageBase64)
 		}
 		insertMsg = insertMsg[:len(insertMsg)-1] // strip last comma
@@ -258,5 +323,3 @@ func (c *DBClient) LoadSpecificConversation(sessionID string) (*SavedConversatio
 
 	return &conv, nil
 }
-
-
