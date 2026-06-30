@@ -1,0 +1,818 @@
+import React, { useState, useEffect, useRef } from 'react';
+import './App.css';
+import { 
+  SelectWorkspace, 
+  LoadSettings, 
+  SaveSettings, 
+  LoadConversation, 
+  SendUserMessage, 
+  CancelAgent,
+  GetDirectoryTree,
+  GetFileContent,
+  SaveFileContent,
+  ListConversations,
+  LoadSpecificConversation,
+  CreateNewConversation,
+  GetOpenWorkspaces,
+  SaveOpenWorkspaces,
+  GetModelList,
+  ToggleModelFavorite
+} from '../wailsjs/go/main/App';
+import * as runtime from '../wailsjs/runtime/runtime';
+
+interface ChatMessage {
+  sender: string;
+  text: string;
+  reasoning?: string;
+  imageBase64?: string;
+}
+
+interface AppSettings {
+  geminiApiKey: string;
+  ollamaEndpoint: string;
+  openCodeApiKey: string;
+  openRouterApiKey: string;
+  useNativeToolCalls: boolean;
+}
+
+interface FileNode {
+  name: string;
+  path: string;
+  isDir: boolean;
+  children?: FileNode[];
+}
+
+interface ConversationHeader {
+  sessionId: string;
+  activeModel: string;
+  agentMode: string;
+  yoloMode: boolean;
+}
+
+interface ModelItem {
+  name: string;
+  isFavorite: boolean;
+}
+
+// Recursive Tree Node Component
+interface TreeNodeProps {
+  node: FileNode;
+  selectedPath: string;
+  onSelectFile: (path: string) => void;
+}
+
+function TreeNode({ node, selectedPath, onSelectFile }: TreeNodeProps) {
+  const [isExpanded, setIsExpanded] = useState<boolean>(false);
+
+  const handleToggle = () => {
+    if (node.isDir) {
+      setIsExpanded(!isExpanded);
+    } else {
+      onSelectFile(node.path);
+    }
+  };
+
+  const isSelected = selectedPath === node.path;
+
+  return (
+    <div className="tree-node">
+      <div 
+        className={`tree-node-label ${isSelected ? 'selected' : ''}`}
+        onClick={handleToggle}
+      >
+        <span className="tree-node-icon">
+          {node.isDir ? (isExpanded ? '📂' : '📁') : '📄'}
+        </span>
+        <span>{node.name}</span>
+      </div>
+
+      {node.isDir && isExpanded && node.children && (
+        <div className="tree-node-children">
+          {node.children.map((child, idx) => (
+            <TreeNode 
+              key={idx} 
+              node={child} 
+              selectedPath={selectedPath} 
+              onSelectFile={onSelectFile}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const [activeModel, setActiveModel] = useState<string>('gemini-2.5-flash');
+  const [agentMode, setAgentMode] = useState<string>('coder');
+  const [yoloMode, setYoloMode] = useState<boolean>(false);
+  
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [inputValue, setInputValue] = useState<string>('');
+  const [logs, setLogs] = useState<string>('System initialized.');
+  const [agentStatus, setAgentStatus] = useState<{ status: string; color: string }>({ status: 'Ready', color: 'green' });
+  const [isGenerating, setIsGenerating] = useState<boolean>(false);
+
+  // Multiple project workspaces
+  const [openWorkspaces, setOpenWorkspaces] = useState<string[]>([]);
+  const [activeWorkspace, setActiveWorkspace] = useState<string>('');
+
+  // File explorer & editor states
+  const [treeData, setTreeData] = useState<FileNode | null>(null);
+  const [selectedFilePath, setSelectedFilePath] = useState<string>('');
+  const [editorContent, setEditorContent] = useState<string>('');
+  const [activeTab, setActiveTab] = useState<'chat' | 'editor'>('chat');
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+
+  // Multiple Chat states
+  const [chatList, setChatList] = useState<ConversationHeader[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string>('');
+
+  // Model list and favorites
+  const [modelsList, setModelsList] = useState<ModelItem[]>([]);
+
+  // Settings
+  const [showSettings, setShowSettings] = useState<boolean>(false);
+  const [settings, setSettings] = useState<AppSettings>({
+    geminiApiKey: '',
+    ollamaEndpoint: 'http://localhost:11434',
+    openCodeApiKey: '',
+    openRouterApiKey: '',
+    useNativeToolCalls: false
+  });
+
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const logsEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll chat
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // Auto-scroll logs
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logs]);
+
+  // Load settings on startup
+  useEffect(() => {
+    LoadSettings()
+      .then((loadedSettings) => {
+        setSettings(loadedSettings);
+        // Refresh models list after settings load (Ollama endpoint might change)
+        refreshModelsList();
+      })
+      .catch((err) => {
+        console.error("Failed to load settings:", err);
+      });
+  }, []);
+
+  // Restore open workspaces on mount
+  useEffect(() => {
+    GetOpenWorkspaces()
+      .then((res) => {
+        if (res && res.workspaces && res.workspaces.length > 0) {
+          setOpenWorkspaces(res.workspaces);
+          if (res.activeWorkspace && res.workspaces.includes(res.activeWorkspace)) {
+            setActiveWorkspace(res.activeWorkspace);
+          } else {
+            setActiveWorkspace(res.workspaces[0]);
+          }
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to restore open workspaces:", err);
+      });
+  }, []);
+
+  // Set up event listeners for agent loop updates
+  useEffect(() => {
+    const handleStatus = (data: { status: string; color: string }) => {
+      setAgentStatus(data);
+      if (data.status === 'Ready') {
+        setIsGenerating(false);
+      } else {
+        setIsGenerating(true);
+      }
+    };
+
+    const handleLog = (text: string) => {
+      setLogs((prev) => prev + '\n' + text);
+    };
+
+    const handleLogStream = (text: string) => {
+      setLogs((prev) => prev + text);
+    };
+
+    const handleMessage = (msg: ChatMessage) => {
+      setMessages((prev) => [...prev, msg]);
+    };
+
+    const handleComplete = () => {
+      setIsGenerating(false);
+      setAgentStatus({ status: 'Ready', color: 'green' });
+      
+      // Reload active conversation and refresh tree
+      if (activeSessionId) {
+        LoadSpecificConversation(activeSessionId).then((conv) => {
+          if (conv) {
+            setMessages(conv.messages);
+          }
+        });
+      }
+      refreshTree();
+    };
+
+    const handleError = (errText: string) => {
+      setLogs((prev) => prev + '\n[ERROR] ' + errText);
+      setIsGenerating(false);
+      setAgentStatus({ status: 'Error', color: 'red' });
+    };
+
+    runtime.EventsOn('agent:status', handleStatus);
+    runtime.EventsOn('agent:log', handleLog);
+    runtime.EventsOn('agent:log_stream', handleLogStream);
+    runtime.EventsOn('agent:message', handleMessage);
+    runtime.EventsOn('agent:complete', handleComplete);
+    runtime.EventsOn('agent:error', handleError);
+
+    return () => {
+      runtime.EventsOff('agent:status');
+      runtime.EventsOff('agent:log');
+      runtime.EventsOff('agent:log_stream');
+      runtime.EventsOff('agent:message');
+      runtime.EventsOff('agent:complete');
+      runtime.EventsOff('agent:error');
+    };
+  }, [activeSessionId, activeWorkspace]);
+
+  // Load conversation history headers and last conversation when active workspace changes
+  useEffect(() => {
+    if (activeWorkspace) {
+      setLogs(`Switched project workspace: ${activeWorkspace}`);
+      setSelectedFilePath('');
+      setEditorContent('');
+      setActiveTab('chat');
+      
+      // Refresh chat list & models list
+      refreshChatList();
+      refreshModelsList();
+
+      // Load last conversation to display first
+      LoadConversation(activeWorkspace)
+        .then((conv) => {
+          if (conv) {
+            setActiveSessionId(conv.sessionId);
+            setActiveModel(conv.activeModel);
+            setAgentMode(conv.agentMode);
+            setYoloMode(conv.yoloMode);
+            setMessages(conv.messages);
+          } else {
+            setMessages([]);
+            setActiveSessionId('');
+          }
+        })
+        .catch((err) => {
+          setLogs((prev) => prev + `\nFailed to load conversation: ${err}`);
+        });
+
+      // Load file tree
+      refreshTree();
+    } else {
+      setTreeData(null);
+      setMessages([]);
+      setChatList([]);
+      setActiveSessionId('');
+    }
+  }, [activeWorkspace]);
+
+  const refreshModelsList = () => {
+    GetModelList()
+      .then((list) => {
+        setModelsList(list || []);
+      })
+      .catch((err) => {
+        console.error("Failed to load models list:", err);
+      });
+  };
+
+  const refreshChatList = () => {
+    if (!activeWorkspace) return;
+    ListConversations(activeWorkspace)
+      .then((list) => {
+        setChatList(list || []);
+      })
+      .catch((err) => {
+        console.error("Failed to load chat history:", err);
+      });
+  };
+
+  const refreshTree = () => {
+    if (!activeWorkspace) return;
+    GetDirectoryTree(activeWorkspace)
+      .then((tree) => {
+        setTreeData(tree);
+      })
+      .catch((err) => {
+        setLogs((prev) => prev + `\nFailed to load directory tree: ${err}`);
+      });
+  };
+
+  const handleOpenWorkspace = async () => {
+    try {
+      const dir = await SelectWorkspace();
+      if (dir) {
+        if (!openWorkspaces.includes(dir)) {
+          const newList = [...openWorkspaces, dir];
+          setOpenWorkspaces(newList);
+          setActiveWorkspace(dir);
+          SaveOpenWorkspaces(newList, dir);
+        } else {
+          setActiveWorkspace(dir);
+          SaveOpenWorkspaces(openWorkspaces, dir);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleCloseWorkspace = (path: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const newList = openWorkspaces.filter((w) => w !== path);
+    setOpenWorkspaces(newList);
+    
+    let nextActive = activeWorkspace;
+    if (activeWorkspace === path) {
+      nextActive = newList.length > 0 ? newList[0] : '';
+      setActiveWorkspace(nextActive);
+    }
+    SaveOpenWorkspaces(newList, nextActive);
+  };
+
+  const handleSelectWorkspaceTab = (path: string) => {
+    setActiveWorkspace(path);
+    SaveOpenWorkspaces(openWorkspaces, path);
+  };
+
+  const handleNewChat = () => {
+    if (!activeWorkspace) return;
+    CreateNewConversation(activeWorkspace, activeModel, agentMode, yoloMode)
+      .then((newConv) => {
+        setActiveSessionId(newConv.sessionId);
+        setMessages([]);
+        refreshChatList();
+        setLogs((prev) => prev + `\nCreated new chat session: ${newConv.sessionId}`);
+      })
+      .catch((err) => {
+        alert(`Failed to create new chat: ${err}`);
+      });
+  };
+
+  const handleSelectChat = (sessionId: string) => {
+    LoadSpecificConversation(sessionId)
+      .then((conv) => {
+        if (conv) {
+          setActiveSessionId(conv.sessionId);
+          setActiveModel(conv.activeModel);
+          setAgentMode(conv.agentMode);
+          setYoloMode(conv.yoloMode);
+          setMessages(conv.messages);
+          setLogs((prev) => prev + `\nSwitched to chat session: ${sessionId}`);
+        }
+      })
+      .catch((err) => {
+        alert(`Failed to load chat: ${err}`);
+      });
+  };
+
+  const handleSendMessage = async () => {
+    if (!inputValue.trim() || !activeWorkspace) return;
+
+    const userText = inputValue;
+    setInputValue('');
+
+    // Pre-insert user bubble to give immediate feedback
+    setMessages((prev) => [...prev, { sender: 'user', text: userText }]);
+    setIsGenerating(true);
+
+    try {
+      await SendUserMessage(activeWorkspace, activeSessionId, userText, activeModel, agentMode, yoloMode);
+      setTimeout(refreshChatList, 1000);
+    } catch (err) {
+      setLogs((prev) => prev + `\n[ERROR] Failed to send message: ${err}`);
+      setIsGenerating(false);
+    }
+  };
+
+  const handleCancelAgent = () => {
+    CancelAgent();
+    setIsGenerating(false);
+  };
+
+  const handleToggleFavorite = () => {
+    if (!activeModel) return;
+    ToggleModelFavorite(activeModel)
+      .then(() => {
+        refreshModelsList();
+        setLogs((prev) => prev + `\nToggled favorite status for: ${activeModel}`);
+      })
+      .catch((err) => {
+        alert(`Failed to toggle favorite: ${err}`);
+      });
+  };
+
+  const handleSaveSettings = async () => {
+    try {
+      await SaveSettings(settings);
+      setShowSettings(false);
+      setLogs((prev) => prev + '\nSettings saved successfully.');
+      // Refresh models list in case Ollama endpoint changed
+      refreshModelsList();
+    } catch (err) {
+      alert(`Failed to save settings: ${err}`);
+    }
+  };
+
+  // Open file in Editor tab
+  const handleSelectFile = (path: string) => {
+    setSelectedFilePath(path);
+    GetFileContent(activeWorkspace, path)
+      .then((content) => {
+        setEditorContent(content);
+        setActiveTab('editor');
+      })
+      .catch((err) => {
+        alert(`Failed to load file: ${err}`);
+      });
+  };
+
+  // Save modified file content
+  const handleSaveFileContent = () => {
+    if (!selectedFilePath || !activeWorkspace) return;
+    setIsSaving(true);
+    SaveFileContent(activeWorkspace, selectedFilePath, editorContent)
+      .then(() => {
+        setLogs((prev) => prev + `\nSaved file: ${selectedFilePath}`);
+        setIsSaving(false);
+      })
+      .catch((err) => {
+        alert(`Failed to save file: ${err}`);
+        setIsSaving(false);
+      });
+  };
+
+  // Format short display names for session IDs
+  const getSessionDisplayName = (header: ConversationHeader) => {
+    const parts = header.sessionId.split('-');
+    if (parts.length > 1) {
+      const ts = parseInt(parts[1], 10);
+      if (!isNaN(ts)) {
+        const date = new Date(ts / 1000000);
+        return `Chat - ${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+      }
+    }
+    return `Chat (${header.activeModel})`;
+  };
+
+  // Determine if active model is a favorite
+  const isCurrentModelFavorite = modelsList.find((m) => m.name === activeModel)?.isFavorite || false;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw' }}>
+      {/* Top Workspace Tab Bar */}
+      <div className="workspace-tabs">
+        {openWorkspaces.map((path) => {
+          const isActive = activeWorkspace === path;
+          const displayFolderName = path.split('\\').pop() || path.split('/').pop() || path;
+          return (
+            <div 
+              key={path}
+              className={`workspace-tab ${isActive ? 'active' : ''}`}
+              onClick={() => handleSelectWorkspaceTab(path)}
+              title={path}
+            >
+              <span>📁 {displayFolderName}</span>
+              <button 
+                className="workspace-tab-close"
+                onClick={(e) => handleCloseWorkspace(path, e)}
+              >
+                ×
+              </button>
+            </div>
+          );
+        })}
+        <button className="workspace-tab-add" onClick={handleOpenWorkspace}>
+          + Open Workspace
+        </button>
+      </div>
+
+      {/* Main Workspace Workspace Layout */}
+      <div className="app-container" style={{ flex: 1, height: 'calc(100vh - 39px)' }}>
+        {/* Sidebar Panel */}
+        <div className="sidebar">
+          {activeWorkspace ? (
+            <>
+              <div className="workspace-section" style={{ maxHeight: '180px', display: 'flex', flexDirection: 'column' }}>
+                <span className="section-label">Chat History</span>
+                <button className="btn-new-chat" onClick={handleNewChat}>
+                  + New Chat Thread
+                </button>
+                <div className="chat-list-container">
+                  {chatList.map((header) => {
+                    const isActive = activeSessionId === header.sessionId;
+                    return (
+                      <div 
+                        key={header.sessionId}
+                        className={`chat-list-item ${isActive ? 'active' : ''}`}
+                        onClick={() => handleSelectChat(header.sessionId)}
+                      >
+                        <div>
+                          <div>{getSessionDisplayName(header)}</div>
+                          <div className="chat-item-meta">{header.activeModel}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {treeData && (
+                <div className="workspace-section" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: '120px' }}>
+                  <span className="section-label">File Explorer</span>
+                  <div className="file-tree-container">
+                    <TreeNode 
+                      node={treeData} 
+                      selectedPath={selectedFilePath} 
+                      onSelectFile={handleSelectFile}
+                    />
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', marginTop: '20px' }}>
+              No project workspaces open. Click "+ Open Workspace" above to load one!
+            </div>
+          )}
+
+          <div className="settings-group" style={{ marginTop: 'auto' }}>
+            <span className="section-label">Model Configuration</span>
+            <div className="model-select-row">
+              <select 
+                className="select-control" 
+                style={{ flex: 1 }}
+                value={activeModel}
+                onChange={(e) => setActiveModel(e.target.value)}
+              >
+                {modelsList.map((item, idx) => (
+                  <option key={idx} value={item.name}>
+                    {item.isFavorite ? `★ ${item.name}` : item.name}
+                  </option>
+                ))}
+              </select>
+              <button 
+                className="btn-star-favorite" 
+                onClick={handleToggleFavorite}
+                title="Toggle Favorite Model"
+              >
+                {isCurrentModelFavorite ? '★' : '☆'}
+              </button>
+            </div>
+
+            <span className="section-label">Agent Mode</span>
+            <select 
+              className="select-control"
+              value={agentMode}
+              onChange={(e) => setAgentMode(e.target.value)}
+            >
+              <option value="coder">Coder Loop (Auto)</option>
+              <option value="chat">Chat Mode (No Tools)</option>
+            </select>
+
+            <div className="toggle-container">
+              <span className="section-label" style={{ marginBottom: 0 }}>YOLO Mode (Auto-run tools)</span>
+              <label className="toggle-switch">
+                <input 
+                  type="checkbox" 
+                  checked={yoloMode}
+                  onChange={(e) => setYoloMode(e.target.checked)}
+                />
+                <span className="slider"></span>
+              </label>
+            </div>
+
+            <button className="btn-secondary" style={{ marginTop: '10px' }} onClick={() => setShowSettings(true)}>
+              API Settings
+            </button>
+          </div>
+        </div>
+
+        {/* Main Panel with Tabs */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          {activeWorkspace ? (
+            <>
+              <div className="tab-bar">
+                <button 
+                  className={`tab-btn ${activeTab === 'chat' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('chat')}
+                >
+                  💬 Agent Chat
+                </button>
+                <button 
+                  className={`tab-btn ${activeTab === 'editor' ? 'active' : ''}`}
+                  disabled={!selectedFilePath}
+                  onClick={() => setActiveTab('editor')}
+                >
+                  📝 Code Editor {selectedFilePath && `(${selectedFilePath.split('/').pop()})`}
+                </button>
+              </div>
+
+              {activeTab === 'chat' ? (
+                <div className="chat-panel" style={{ height: 'calc(100vh - 82px)' }}>
+                  <div className="chat-header">
+                    <div className="status-indicator">
+                      <div className="status-dot" style={{ color: agentStatus.color, backgroundColor: agentStatus.color }}></div>
+                      <span>Status: {agentStatus.status}</span>
+                    </div>
+
+                    {isGenerating && (
+                      <button className="btn-cancel-agent" onClick={handleCancelAgent}>
+                        Cancel Agent
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="chat-messages">
+                    {messages.length === 0 ? (
+                      <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '40px' }}>
+                        No messages yet. Send a prompt to begin!
+                      </div>
+                    ) : (
+                      messages.map((msg, i) => {
+                        const isToolOutput = msg.text.startsWith('### TOOL OUTPUT:');
+                        return (
+                          <div key={i} className={`message-bubble ${msg.sender}`}>
+                            <span className="bubble-sender">{msg.sender}</span>
+                            {isToolOutput ? (
+                              <div className="tool-execution-card">
+                                {msg.text}
+                              </div>
+                            ) : (
+                              <div className="bubble-content">
+                                {msg.text}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                    <div ref={chatEndRef} />
+                  </div>
+
+                  <div className="input-container">
+                    <textarea
+                      className="chat-input"
+                      placeholder="Type a prompt to run the agent loop..."
+                      disabled={isGenerating}
+                      value={inputValue}
+                      onChange={(e) => setInputValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSendMessage();
+                        }
+                      }}
+                    />
+                    <button 
+                      className="btn-send" 
+                      disabled={isGenerating || !inputValue.trim()}
+                      onClick={handleSendMessage}
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="editor-panel" style={{ height: 'calc(100vh - 82px)' }}>
+                  <div className="editor-header">
+                    <span className="editor-filename">Selected File: {selectedFilePath}</span>
+                  </div>
+                  <textarea
+                    className="editor-textarea"
+                    value={editorContent}
+                    onChange={(e) => setEditorContent(e.target.value)}
+                  />
+                  <div className="editor-actions">
+                    <button 
+                      className="btn-primary" 
+                      disabled={isSaving}
+                      onClick={handleSaveFileContent}
+                    >
+                      {isSaving ? 'Saving Changes...' : '💾 Save Changes'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
+              No project workspaces open. Click "+ Open Workspace" above to select a folder!
+            </div>
+          )}
+        </div>
+
+        {/* Telemetry & Shell Logging Panel */}
+        <div className="log-panel" style={{ height: '100%' }}>
+          <div className="log-header">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="4 17 10 11 4 5"></polyline>
+              <line x1="12" y1="19" x2="20" y2="19"></line>
+            </svg>
+            <span>Terminal & Telemetry</span>
+          </div>
+          <div className="log-content">
+            {logs}
+            <div ref={logsEndRef} />
+          </div>
+        </div>
+      </div>
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <span className="modal-title">API & Endpoint Configuration</span>
+            
+            <div className="form-group">
+              <label className="section-label">Gemini API Key</label>
+              <input
+                type="password"
+                className="form-input"
+                placeholder="AIzaSy..."
+                value={settings.geminiApiKey}
+                onChange={(e) => setSettings({ ...settings, geminiApiKey: e.target.value })}
+              />
+            </div>
+
+            <div className="form-group">
+              <label className="section-label">Ollama Endpoint</label>
+              <input
+                type="text"
+                className="form-input"
+                value={settings.ollamaEndpoint}
+                onChange={(e) => setSettings({ ...settings, ollamaEndpoint: e.target.value })}
+              />
+            </div>
+
+            <div className="form-group">
+              <label className="section-label">OpenCode API Key</label>
+              <input
+                type="password"
+                className="form-input"
+                placeholder="sk-..."
+                value={settings.openCodeApiKey}
+                onChange={(e) => setSettings({ ...settings, openCodeApiKey: e.target.value })}
+              />
+            </div>
+
+            <div className="form-group">
+              <label className="section-label">OpenRouter API Key</label>
+              <input
+                type="password"
+                className="form-input"
+                placeholder="sk-or-..."
+                value={settings.openRouterApiKey}
+                onChange={(e) => setSettings({ ...settings, openRouterApiKey: e.target.value })}
+              />
+            </div>
+
+            <div className="form-group">
+              <label className="toggle-container">
+                <span className="section-label" style={{ marginBottom: 0 }}>Use Native Tool Calls</span>
+                <label className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    checked={settings.useNativeToolCalls}
+                    onChange={(e) => setSettings({ ...settings, useNativeToolCalls: e.target.checked })}
+                  />
+                  <span className="slider"></span>
+                </label>
+              </label>
+            </div>
+
+            <div className="modal-actions">
+              <button className="btn-secondary" onClick={() => setShowSettings(false)}>Cancel</button>
+              <button className="btn-primary" onClick={handleSaveSettings}>Save Configuration</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default App;

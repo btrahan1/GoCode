@@ -1,0 +1,4 @@
+- [x] Add Go helpers in `app.go` to save and load lists of opened workspace projects
+- [x] Create React workspace tab layout at the top of the interface in `App.tsx`
+- [x] Style the workspace tab bar in `App.css`
+- [x] Run verification tests
