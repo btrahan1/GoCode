@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -737,4 +738,22 @@ func (a *App) CollapseObsoleteFileHistory(messages []ChatMessage, relPath string
 	}
 	return messages
 }
+
+func (a *App) OpenPathInExplorer(workspacePath, relPath string) error {
+	fullPath := filepath.Clean(filepath.Join(workspacePath, relPath))
+	
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return err
+	}
+
+	var cmd *exec.Cmd
+	if info.IsDir() {
+		cmd = exec.Command("explorer.exe", fullPath)
+	} else {
+		cmd = exec.Command("explorer.exe", "/select,", fullPath)
+	}
+	return cmd.Run()
+}
+
 

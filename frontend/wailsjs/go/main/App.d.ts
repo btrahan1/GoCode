@@ -26,6 +26,8 @@ export function LoadSettings():Promise<main.AppSettings>;
 
 export function LoadSpecificConversation(arg1:string):Promise<main.SavedConversation>;
 
+export function OpenPathInExplorer(arg1:string,arg2:string):Promise<void>;
+
 export function SaveConversation(arg1:string,arg2:main.SavedConversation):Promise<void>;
 
 export function SaveFileContent(arg1:string,arg2:string,arg3:string):Promise<void>;

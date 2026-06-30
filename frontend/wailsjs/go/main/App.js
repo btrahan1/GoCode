@@ -50,6 +50,10 @@ export function LoadSpecificConversation(arg1) {
   return window['go']['main']['App']['LoadSpecificConversation'](arg1);
 }
 
+export function OpenPathInExplorer(arg1, arg2) {
+  return window['go']['main']['App']['OpenPathInExplorer'](arg1, arg2);
+}
+
 export function SaveConversation(arg1, arg2) {
   return window['go']['main']['App']['SaveConversation'](arg1, arg2);
 }

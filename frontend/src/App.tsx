@@ -16,7 +16,8 @@ import {
   GetOpenWorkspaces,
   SaveOpenWorkspaces,
   GetModelList,
-  ToggleModelFavorite
+  ToggleModelFavorite,
+  OpenPathInExplorer
 } from '../wailsjs/go/main/App';
 import * as runtime from '../wailsjs/runtime/runtime';
 
@@ -60,13 +61,18 @@ interface ModelItem {
 interface TreeNodeProps {
   node: FileNode;
   selectedPath: string;
+  checkedPaths: { [key: string]: boolean };
   onSelectFile: (path: string) => void;
+  onToggleCheck: (node: FileNode, checked: boolean) => void;
+  onRightClick: (e: React.MouseEvent, node: FileNode) => void;
 }
 
-function TreeNode({ node, selectedPath, onSelectFile }: TreeNodeProps) {
+function TreeNode({ node, selectedPath, checkedPaths, onSelectFile, onToggleCheck, onRightClick }: TreeNodeProps) {
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
 
-  const handleToggle = () => {
+  const handleToggle = (e: React.MouseEvent) => {
+    // Ignore toggles clicking checkboxes directly
+    if ((e.target as HTMLElement).tagName === 'INPUT') return;
     if (node.isDir) {
       setIsExpanded(!isExpanded);
     } else {
@@ -75,13 +81,30 @@ function TreeNode({ node, selectedPath, onSelectFile }: TreeNodeProps) {
   };
 
   const isSelected = selectedPath === node.path;
+  const isChecked = !!checkedPaths[node.path];
+
+  const handleCheckboxChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    onToggleCheck(node, e.target.checked);
+  };
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    onRightClick(e, node);
+  };
 
   return (
     <div className="tree-node">
       <div 
         className={`tree-node-label ${isSelected ? 'selected' : ''}`}
         onClick={handleToggle}
+        onContextMenu={handleContextMenu}
       >
+        <input 
+          type="checkbox" 
+          className="tree-node-checkbox" 
+          checked={isChecked}
+          onChange={handleCheckboxChange}
+        />
         <span className="tree-node-icon">
           {node.isDir ? (isExpanded ? '📂' : '📁') : '📄'}
         </span>
@@ -95,7 +118,10 @@ function TreeNode({ node, selectedPath, onSelectFile }: TreeNodeProps) {
               key={idx} 
               node={child} 
               selectedPath={selectedPath} 
+              checkedPaths={checkedPaths}
               onSelectFile={onSelectFile}
+              onToggleCheck={onToggleCheck}
+              onRightClick={onRightClick}
             />
           ))}
         </div>
@@ -142,6 +168,18 @@ function App() {
   const sidebarWidthRef = useRef<number>(280);
   const logPanelWidthRef = useRef<number>(320);
 
+  // Checkboxes in FileTree
+  const [checkedPaths, setCheckedPaths] = useState<{ [path: string]: boolean }>({});
+  const [isCopying, setIsCopying] = useState<boolean>(false);
+
+  // Context Menu State
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    node: FileNode | null;
+  }>({ visible: false, x: 0, y: 0, node: null });
+
   // Settings
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [settings, setSettings] = useState<AppSettings>({
@@ -166,6 +204,17 @@ function App() {
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
+
+  // Dismiss context menu on left click anywhere
+  useEffect(() => {
+    const handleGlobalClick = () => {
+      if (contextMenu.visible) {
+        setContextMenu({ visible: false, x: 0, y: 0, node: null });
+      }
+    };
+    document.addEventListener('click', handleGlobalClick);
+    return () => document.removeEventListener('click', handleGlobalClick);
+  }, [contextMenu]);
 
   // Load settings on startup
   useEffect(() => {
@@ -274,6 +323,7 @@ function App() {
       setSelectedFilePath('');
       setEditorContent('');
       setActiveTab('chat');
+      setCheckedPaths({});
       
       // Refresh chat list & models list
       refreshChatList();
@@ -361,6 +411,82 @@ function App() {
     logPanelResizingRef.current = true;
     document.addEventListener('mousemove', handleLogPanelMouseMove);
     document.addEventListener('mouseup', stopLogPanelResize);
+  };
+
+  // Tree nodes checklist helpers
+  const toggleNodeAndChildren = (node: FileNode, checkState: boolean, currentMap: { [p: string]: boolean }) => {
+    currentMap[node.path] = checkState;
+    if (node.isDir && node.children) {
+      node.children.forEach((child) => {
+        toggleNodeAndChildren(child, checkState, currentMap);
+      });
+    }
+  };
+
+  const handleToggleCheck = (node: FileNode, checked: boolean) => {
+    setCheckedPaths((prev) => {
+      const nextMap = { ...prev };
+      toggleNodeAndChildren(node, checked, nextMap);
+      return nextMap;
+    });
+  };
+
+  const handleRightClickNode = (e: React.MouseEvent, node: FileNode) => {
+    setContextMenu({
+      visible: true,
+      x: e.clientX,
+      y: e.clientY,
+      node
+    });
+  };
+
+  const handleOpenInExplorer = () => {
+    if (!contextMenu.node || !activeWorkspace) return;
+    OpenPathInExplorer(activeWorkspace, contextMenu.node.path)
+      .then(() => {
+        setLogs((prev) => prev + `\nOpened in Explorer: ${contextMenu.node?.path}`);
+      })
+      .catch((err) => {
+        alert(`Failed to open in Explorer: ${err}`);
+      });
+  };
+
+  // Recurse to find all checked files (leaves)
+  const getCheckedFilesList = (node: FileNode, map: { [p: string]: boolean }, list: string[]) => {
+    if (!node.isDir) {
+      if (map[node.path]) {
+        list.push(node.path);
+      }
+    } else if (node.children) {
+      node.children.forEach((child) => getCheckedFilesList(child, map, list));
+    }
+  };
+
+  const handleCopySelected = async () => {
+    if (!treeData || !activeWorkspace) return;
+    const filePaths: string[] = [];
+    getCheckedFilesList(treeData, checkedPaths, filePaths);
+
+    if (filePaths.length === 0) {
+      alert("No files checked! Check boxes next to files in the tree view to select them first.");
+      return;
+    }
+
+    setIsCopying(true);
+    let clipboardBuffer = "";
+
+    try {
+      for (const path of filePaths) {
+        const content = await GetFileContent(activeWorkspace, path);
+        clipboardBuffer += `File: ${path}\n\`\`\`\n${content}\n\`\`\`\n\n`;
+      }
+      await navigator.clipboard.writeText(clipboardBuffer);
+      setLogs((prev) => prev + `\n[CLIPBOARD] Copied content of ${filePaths.length} selected files to clipboard.`);
+    } catch (err) {
+      alert(`Failed to copy selected files: ${err}`);
+    } finally {
+      setIsCopying(false);
+    }
   };
 
   const refreshModelsList = () => {
@@ -685,13 +811,26 @@ function App() {
               </div>
 
               <div className="workspace-section" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: '120px' }}>
-                <span className="section-label">File Explorer</span>
+                <div className="explorer-header">
+                  <span className="section-label" style={{ marginBottom: 0 }}>File Explorer</span>
+                  <button 
+                    className="btn-copy-selected"
+                    onClick={handleCopySelected}
+                    disabled={isCopying}
+                    title="Copy selected files code content into clipboard"
+                  >
+                    📋 {isCopying ? 'Copying...' : 'Copy Selected'}
+                  </button>
+                </div>
                 {treeData ? (
                   <div className="file-tree-container">
                     <TreeNode 
                       node={treeData} 
                       selectedPath={selectedFilePath} 
+                      checkedPaths={checkedPaths}
                       onSelectFile={handleSelectFile}
+                      onToggleCheck={handleToggleCheck}
+                      onRightClick={handleRightClickNode}
                     />
                   </div>
                 ) : (
@@ -854,6 +993,19 @@ function App() {
           </div>
         </div>
       </div>
+
+      {/* Floating Context Menu */}
+      {contextMenu.visible && (
+        <div 
+          className="context-menu" 
+          style={{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="context-menu-item" onClick={handleOpenInExplorer}>
+            📂 Open in Explorer
+          </div>
+        </div>
+      )}
 
       {/* Settings Modal */}
       {showSettings && (
