@@ -584,8 +584,71 @@ function App() {
         </button>
       </div>
 
+      {/* Horizontal Configuration Toolbar */}
+      {activeWorkspace && (
+        <div className="controls-toolbar">
+          <div className="toolbar-group">
+            <span className="toolbar-label">Model:</span>
+            <select 
+              className="select-control-sm" 
+              value={activeModel}
+              onChange={(e) => setActiveModel(e.target.value)}
+            >
+              {modelsList.map((item, idx) => (
+                <option key={idx} value={item.name}>
+                  {item.isFavorite ? `★ ${item.name}` : item.name}
+                </option>
+              ))}
+            </select>
+            <button 
+              className="btn-star-favorite-sm" 
+              onClick={handleToggleFavorite}
+              title="Toggle Favorite Model"
+            >
+              {isCurrentModelFavorite ? '★' : '☆'}
+            </button>
+          </div>
+
+          <div className="toolbar-group">
+            <span className="toolbar-label">Agent Mode:</span>
+            <select 
+              className="select-control-sm"
+              value={agentMode}
+              onChange={(e) => setAgentMode(e.target.value)}
+            >
+              <option value="coder">Coder Loop (Auto)</option>
+              <option value="chat">Chat Mode (No Tools)</option>
+            </select>
+          </div>
+
+          <div className="toolbar-group">
+            <div className="toolbar-toggle-container">
+              <span className="toolbar-label">YOLO Mode:</span>
+              <label className="toggle-switch">
+                <input 
+                  type="checkbox" 
+                  checked={yoloMode}
+                  onChange={(e) => setYoloMode(e.target.checked)}
+                />
+                <span className="slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div className="toolbar-group" style={{ marginLeft: 'auto' }}>
+            <button 
+              className="btn-gear-settings" 
+              onClick={() => setShowSettings(true)}
+              title="Configure API Keys & Endpoints"
+            >
+              ⚙️
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main Workspace Workspace Layout */}
-      <div className="app-container" style={{ flex: 1, height: 'calc(100vh - 39px)' }}>
+      <div className="app-container" style={{ flex: 1, height: activeWorkspace ? 'calc(100vh - 83px)' : 'calc(100vh - 39px)' }}>
         {/* Sidebar Panel */}
         <div 
           className="sidebar" 
@@ -621,9 +684,9 @@ function App() {
                 </div>
               </div>
 
-              {treeData && (
-                <div className="workspace-section" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: '120px' }}>
-                  <span className="section-label">File Explorer</span>
+              <div className="workspace-section" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: '120px' }}>
+                <span className="section-label">File Explorer</span>
+                {treeData ? (
                   <div className="file-tree-container">
                     <TreeNode 
                       node={treeData} 
@@ -631,65 +694,18 @@ function App() {
                       onSelectFile={handleSelectFile}
                     />
                   </div>
-                </div>
-              )}
+                ) : (
+                  <div style={{ color: 'var(--text-muted)', fontSize: '12px', padding: '10px', textAlign: 'center' }}>
+                    Loading file structure...
+                  </div>
+                )}
+              </div>
             </>
           ) : (
             <div style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', marginTop: '20px' }}>
               No project workspaces open. Click "+ Open Workspace" above to load one!
             </div>
           )}
-
-          <div className="settings-group" style={{ marginTop: 'auto' }}>
-            <span className="section-label">Model Configuration</span>
-            <div className="model-select-row">
-              <select 
-                className="select-control" 
-                style={{ flex: 1 }}
-                value={activeModel}
-                onChange={(e) => setActiveModel(e.target.value)}
-              >
-                {modelsList.map((item, idx) => (
-                  <option key={idx} value={item.name}>
-                    {item.isFavorite ? `★ ${item.name}` : item.name}
-                  </option>
-                ))}
-              </select>
-              <button 
-                className="btn-star-favorite" 
-                onClick={handleToggleFavorite}
-                title="Toggle Favorite Model"
-              >
-                {isCurrentModelFavorite ? '★' : '☆'}
-              </button>
-            </div>
-
-            <span className="section-label">Agent Mode</span>
-            <select 
-              className="select-control"
-              value={agentMode}
-              onChange={(e) => setAgentMode(e.target.value)}
-            >
-              <option value="coder">Coder Loop (Auto)</option>
-              <option value="chat">Chat Mode (No Tools)</option>
-            </select>
-
-            <div className="toggle-container">
-              <span className="section-label" style={{ marginBottom: 0 }}>YOLO Mode (Auto-run tools)</span>
-              <label className="toggle-switch">
-                <input 
-                  type="checkbox" 
-                  checked={yoloMode}
-                  onChange={(e) => setYoloMode(e.target.checked)}
-                />
-                <span className="slider"></span>
-              </label>
-            </div>
-
-            <button className="btn-secondary" style={{ marginTop: '10px' }} onClick={() => setShowSettings(true)}>
-              API Settings
-            </button>
-          </div>
         </div>
 
         {/* Sidebar Drag Resizer */}
@@ -716,7 +732,7 @@ function App() {
               </div>
 
               {activeTab === 'chat' ? (
-                <div className="chat-panel" style={{ height: 'calc(100vh - 82px)' }}>
+                <div className="chat-panel" style={{ height: 'calc(100vh - 126px)' }}>
                   <div className="chat-header">
                     <div className="status-indicator">
                       <div className="status-dot" style={{ color: agentStatus.color, backgroundColor: agentStatus.color }}></div>
@@ -784,7 +800,7 @@ function App() {
                   </div>
                 </div>
               ) : (
-                <div className="editor-panel" style={{ height: 'calc(100vh - 82px)' }}>
+                <div className="editor-panel" style={{ height: 'calc(100vh - 126px)' }}>
                   <div className="editor-header">
                     <span className="editor-filename">Selected File: {selectedFilePath}</span>
                   </div>
