@@ -34,6 +34,10 @@ export function GetOpenWorkspaces() {
   return window['go']['main']['App']['GetOpenWorkspaces']();
 }
 
+export function ImportFreeCodeSettings() {
+  return window['go']['main']['App']['ImportFreeCodeSettings']();
+}
+
 export function ListConversations(arg1) {
   return window['go']['main']['App']['ListConversations'](arg1);
 }

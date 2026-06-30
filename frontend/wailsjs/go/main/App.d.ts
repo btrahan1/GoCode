@@ -18,6 +18,8 @@ export function GetModelList():Promise<Array<main.ModelItem>>;
 
 export function GetOpenWorkspaces():Promise<main.OpenWorkspacesResult>;
 
+export function ImportFreeCodeSettings():Promise<void>;
+
 export function ListConversations(arg1:string):Promise<Array<main.SavedConversation>>;
 
 export function LoadConversation(arg1:string):Promise<main.SavedConversation>;

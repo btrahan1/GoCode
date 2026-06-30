@@ -33,6 +33,60 @@ func NewApp(db *DBClient) *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.ImportFreeCodeSettings()
+}
+
+func (a *App) ImportFreeCodeSettings() {
+	// Only import if settings are empty
+	existingKey, _ := a.db.GetSetting("gemini_api_key")
+	if existingKey != "" {
+		return
+	}
+
+	localAppData := os.Getenv("LOCALAPPDATA")
+	if localAppData == "" {
+		return
+	}
+
+	freecodePath := filepath.Join(localAppData, "FreeCode", "settings.json")
+	if _, err := os.Stat(freecodePath); err != nil {
+		return
+	}
+
+	fileBytes, err := os.ReadFile(freecodePath)
+	if err != nil {
+		return
+	}
+
+	var fcSettings struct {
+		GeminiApiKey       string   `json:"GeminiApiKey"`
+		OpenCodeApiKey     string   `json:"OpenCodeApiKey"`
+		OpenRouterApiKey   string   `json:"OpenRouterApiKey"`
+		UseNativeToolCalls bool     `json:"UseNativeToolCalls"`
+		FavoriteModels     []string `json:"FavoriteModels"`
+	}
+
+	if err := json.Unmarshal(fileBytes, &fcSettings); err != nil {
+		return
+	}
+
+	// Save to DB
+	if fcSettings.GeminiApiKey != "" {
+		_ = a.db.SaveSetting("gemini_api_key", fcSettings.GeminiApiKey)
+	}
+	if fcSettings.OpenCodeApiKey != "" {
+		_ = a.db.SaveSetting("open_code_api_key", fcSettings.OpenCodeApiKey)
+	}
+	if fcSettings.OpenRouterApiKey != "" {
+		_ = a.db.SaveSetting("open_router_api_key", fcSettings.OpenRouterApiKey)
+	}
+	if fcSettings.UseNativeToolCalls {
+		_ = a.db.SaveSetting("use_native_tool_calls", "true")
+	}
+	if len(fcSettings.FavoriteModels) > 0 {
+		favBytes, _ := json.Marshal(fcSettings.FavoriteModels)
+		_ = a.db.SaveSetting("favorite_models", string(favBytes))
+	}
 }
 
 // SelectWorkspace opens a directory selector dialog.
